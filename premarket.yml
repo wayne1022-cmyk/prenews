@@ -1,0 +1,63 @@
+name: CTEE 盤前新聞 AI 摘要
+
+on:
+  schedule:
+    # GitHub cron 使用 UTC：23:23 UTC = 台灣時間隔天 07:23
+    # 0-4（UTC 週日～週四）= 台灣週一～週五
+    # 刻意避開整點：整點的排程最擁擠，延遲最嚴重
+    - cron: "23 23 * * 0-4"
+  workflow_dispatch:        # 可在 Actions 頁面手動執行，方便測試
+
+concurrency:
+  group: ctee-premarket
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  premarket:
+    runs-on: ubuntu-latest  # 改用自架 runner 時換成 self-hosted
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝套件
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 第一階段：抓取
+        run: python stage1_scrape.py
+
+      - name: 第二階段：AI 摘要
+        if: always()        # 前一步失敗仍執行，確保狀態能一路傳到第三階段
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+        run: python stage2_ai.py
+
+      - name: 第三階段：寄送 Email
+        if: always()
+        env:
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python stage3_notify.py
+
+      - name: 上傳結果與除錯檔
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: premarket-${{ github.run_id }}
+          path: |
+            data/
+            debug/
+          retention-days: 7
+          if-no-files-found: ignore
